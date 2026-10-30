@@ -54,3 +54,28 @@ def test_remote_ollama_is_rejected(url):
 def test_overlap_validation():
     with pytest.raises(ValidationError):
         IngestRequest(chunk_size=128, chunk_overlap=120)
+
+
+def test_request_defaults_preserve_explicit_values_and_validate():
+    from app.schemas import RAGRequest
+
+    request = RAGRequest(question="Question", temperature=0, top_k=3)
+    updated = request.with_defaults(temperature=0.7, top_k=5, llm_model="gemma4:12b")
+    assert updated.temperature == 0
+    assert updated.top_k == 3
+    assert updated.llm_model == "gemma4:12b"
+    assert request.llm_model == "qwen3.5:9b"
+    with pytest.raises(ValidationError):
+        RAGRequest(question="Question").with_defaults(top_k=0)
+
+
+def test_pipeline_closed_when_required_ollama_startup_fails(settings):
+    class UnavailablePipeline(StubPipeline):
+        def models(self):
+            raise httpx.ConnectError("Offline")
+
+    settings.REQUIRE_OLLAMA_ON_STARTUP = True
+    app = create_app(settings, UnavailablePipeline)
+    with pytest.raises(httpx.ConnectError), TestClient(app):
+        pytest.fail("Startup should fail")
+    assert app.state.pipeline.closed

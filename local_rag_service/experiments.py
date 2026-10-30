@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 import logging
 import platform
+from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -15,7 +16,6 @@ import pandas as pd
 import psutil
 from filelock import FileLock
 from ollama import ResponseError
-from pydantic import ValidationError
 
 import app  # noqa: F401 -- sets offline policy before ML libraries are imported
 from app.config import BASE_DIR, LLM_MODELS, Settings
@@ -191,7 +191,8 @@ def plot_results(frame: pd.DataFrame, output: Path) -> None:
         if finite.empty:
             ax.text(0.5, 0.5, "No applicable measurements", ha="center", transform=ax.transAxes)
         else:
-            order = [c.name for c in experiment_configs() if c.name in set(data["config"])]
+            present = set(data["config"])
+            order = [c.name for c in experiment_configs() if c.name in present]
             sns.barplot(
                 data=finite, x="config", y="Score", hue="Metric", errorbar=None, ax=ax, order=order
             )
@@ -282,8 +283,7 @@ def perform_query(pipeline, config, question, temperature):
 def generate_runs(args, configs, questions, settings):
     from app.evaluation import retrieval_metrics
 
-    pipeline = LocalRAGPipeline(settings)
-    try:
+    with closing(LocalRAGPipeline(settings)) as pipeline:
         installed = pipeline.models().ollama_models
         required = {config.llm_model for config in configs}
         if args.phase == "all":
@@ -318,8 +318,9 @@ def generate_runs(args, configs, questions, settings):
                 ):
                     logger.info("Indexing %s", logical_name)
                     pipeline.ingest(ingest)
-                pinned[logical_name] = read_json(path)["collection_name"]
-                if read_json(path)["corpus_hash"] != expected_corpus:
+                active = read_json(path)
+                pinned[logical_name] = active["collection_name"]
+                if active["corpus_hash"] != expected_corpus:
                     raise ValueError("Corpus changed while preparing an experiment index")
                 write_json(version_path, pinned)
                 prepared.add(logical_name)
@@ -380,8 +381,6 @@ def generate_runs(args, configs, questions, settings):
                 row["rss_bytes"] = psutil.Process().memory_info().rss
                 write_json(path, row)
             export_reports(args.output_dir)
-    finally:
-        pipeline.close()
     del pipeline
     gc.collect()
 
@@ -404,7 +403,7 @@ async def evaluate_runs(args, settings):
                     [source["text"] for source in row["sources"]],
                 )
                 row.update(values, status="evaluated", error="")
-            except (httpx.HTTPError, RuntimeError, ValidationError, ValueError) as error:
+            except (httpx.HTTPError, RuntimeError, ValueError) as error:
                 row.update(status="evaluation_error", error=f"{type(error).__name__}: {error}")
                 logger.error("Evaluation failed: %s", error)
             row["evaluation_latency_s"] = perf_counter() - start
@@ -516,7 +515,6 @@ def execute_run(args):
     settings = Settings()
     configs = experiment_configs(args.experiment, args.model, args.models)
     manifest = run_manifest(args, configs, settings)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     path = args.output_dir / "run_manifest.json"
     if path.exists():
         if not args.resume:

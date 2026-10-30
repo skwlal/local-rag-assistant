@@ -37,10 +37,8 @@ class LocalJudge(InstructorBaseRagasLLM):
     def generate(self, prompt: str, response_model: type[BaseModel]) -> BaseModel:
         async def once():
             judge = LocalJudge(self.settings)
-            try:
+            async with judge.client:
                 return await judge.agenerate(prompt, response_model)
-            finally:
-                await judge.close()
 
         return asyncio.run(once())
 
@@ -86,9 +84,10 @@ class LocalJudge(InstructorBaseRagasLLM):
                 },
             )
             response.raise_for_status()
-            if response.json().get("done_reason") == "length":
+            payload = response.json()
+            if payload.get("done_reason") == "length":
                 raise RuntimeError("Judge output truncated; increase OLLAMA_NUM_PREDICT")
-            content = strip_thinking(response.json()["message"]["content"])
+            content = strip_thinking(payload["message"]["content"])
             try:
                 return response_model.model_validate_json(content)
             except ValidationError:

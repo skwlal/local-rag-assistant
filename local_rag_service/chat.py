@@ -1,6 +1,7 @@
 """Terminal interface to the existing local RAG pipeline."""
 
 import argparse
+from contextlib import closing
 
 import httpx
 from ollama import ResponseError
@@ -24,8 +25,6 @@ def select_model(pipeline: LocalRAGPipeline, name: str) -> str:
     available = pipeline.models().ollama_models
     if name not in available:
         raise ValueError(f"Модель {name!r} не установлена. Доступны: {', '.join(available)}")
-    # The hybrid retriever currently consults DEFAULT_LLM_MODEL too.
-    pipeline.settings.DEFAULT_LLM_MODEL = name
     return name
 
 
@@ -53,8 +52,7 @@ def main(argv=None) -> int:
     parser.add_argument("--sources", action="store_true", help="Показывать текст источников")
     args = parser.parse_args(argv)
     settings = Settings(**({"OLLAMA_BASE_URL": args.ollama_url} if args.ollama_url else {}))
-    pipeline = LocalRAGPipeline(settings)
-    try:
+    with closing(LocalRAGPipeline(settings)) as pipeline:
         if args.models:
             print("\n".join(pipeline.models().ollama_models) or "Установленных моделей нет.")
             return 0
@@ -99,8 +97,6 @@ def main(argv=None) -> int:
             except EXPECTED_ERRORS as exc:
                 print(f"Ошибка: {exc}")
         return 0
-    finally:
-        pipeline.close()
 
 
 if __name__ == "__main__":

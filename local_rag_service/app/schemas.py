@@ -1,4 +1,4 @@
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -9,6 +9,13 @@ RetrievalMode = Literal["dense", "hybrid", "hybrid_rerank"]
 
 class RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
+
+    def with_defaults(self, **defaults: Any) -> Self:
+        """Apply service defaults without overriding explicitly supplied fields."""
+        missing = {
+            key: value for key, value in defaults.items() if key not in self.model_fields_set
+        }
+        return type(self).model_validate(self.model_dump() | missing)
 
 
 class IngestRequest(RequestModel):

@@ -1,5 +1,5 @@
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from typing import Any
 
 import httpx
@@ -32,9 +32,8 @@ def create_app(settings: Settings | None = None, pipeline_factory=LocalRAGPipeli
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
-        pipeline = pipeline_factory(settings)
-        app.state.pipeline = pipeline
-        try:
+        with closing(pipeline_factory(settings)) as pipeline:
+            app.state.pipeline = pipeline
             pipeline.client.heartbeat()
             try:
                 pipeline.models()
@@ -43,8 +42,6 @@ def create_app(settings: Settings | None = None, pipeline_factory=LocalRAGPipeli
                     raise
                 logger.warning("Ollama unavailable at startup: %s", error)
             yield
-        finally:
-            pipeline.close()
 
     app = FastAPI(title="Local RAG", version="0.1.0", lifespan=lifespan)
 
@@ -76,10 +73,7 @@ def create_app(settings: Settings | None = None, pipeline_factory=LocalRAGPipeli
 
     @app.post("/ingest", response_model=IngestResponse)
     def ingest(body: IngestRequest, request: Request):
-        if "embedding_model" not in body.model_fields_set:
-            body = IngestRequest.model_validate(
-                body.model_dump() | {"embedding_model": settings.DEFAULT_EMBED_MODEL}
-            )
+        body = body.with_defaults(embedding_model=settings.DEFAULT_EMBED_MODEL)
         return request.app.state.pipeline.ingest(body)
 
     @app.post("/rag", response_model=RAGResponse)
@@ -90,10 +84,7 @@ def create_app(settings: Settings | None = None, pipeline_factory=LocalRAGPipeli
             "top_k": settings.DEFAULT_TOP_K,
             "temperature": settings.DEFAULT_TEMPERATURE,
         }
-        body = RAGRequest.model_validate(
-            body.model_dump()
-            | {key: value for key, value in defaults.items() if key not in body.model_fields_set}
-        )
+        body = body.with_defaults(**defaults)
         return request.app.state.pipeline.query(body)
 
     @app.post("/generate", response_model=DirectGenerateResponse)
@@ -102,10 +93,7 @@ def create_app(settings: Settings | None = None, pipeline_factory=LocalRAGPipeli
             "model": settings.DEFAULT_LLM_MODEL,
             "temperature": settings.DEFAULT_TEMPERATURE,
         }
-        body = DirectGenerateRequest.model_validate(
-            body.model_dump()
-            | {key: value for key, value in defaults.items() if key not in body.model_fields_set}
-        )
+        body = body.with_defaults(**defaults)
         return request.app.state.pipeline.generate(body)
 
     @app.get("/models", response_model=ModelListResponse)

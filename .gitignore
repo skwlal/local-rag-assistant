@@ -8,18 +8,13 @@ __pycache__/
 local_rag_service/models/
 local_rag_service/data/raw/*
 !local_rag_service/data/raw/.gitkeep
-local_rag_service/data/processed_md/*
-!local_rag_service/data/processed_md/.gitkeep
+local_rag_service/data/processed_md/
 local_rag_service/data/chroma_db/
 local_rag_service/data/indexes/
 local_rag_service/data/metadata.csv
-local_rag_service/results/*
-!local_rag_service/results/plots/
-!local_rag_service/results/plots/.gitkeep
-local_rag_service/logs/*
-!local_rag_service/logs/.gitkeep
+local_rag_service/results/
+local_rag_service/logs/
 *.egg-info/
-
 
 # Local project specifications
 /prompt.md
