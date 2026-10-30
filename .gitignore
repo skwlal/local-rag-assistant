@@ -1,0 +1,34 @@
+.venv/
+.cache/
+.python/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.env
+local_rag_service/models/
+local_rag_service/data/raw/*
+!local_rag_service/data/raw/.gitkeep
+local_rag_service/data/processed_md/*
+!local_rag_service/data/processed_md/.gitkeep
+local_rag_service/data/chroma_db/
+local_rag_service/data/indexes/
+local_rag_service/data/metadata.csv
+local_rag_service/results/*
+!local_rag_service/results/plots/
+!local_rag_service/results/plots/.gitkeep
+local_rag_service/logs/*
+!local_rag_service/logs/.gitkeep
+*.egg-info/
+
+
+# Local project specifications
+/prompt.md
+/PLAN.md
+
+# Drafts derived from local lecture materials
+/local_rag_service/data/test_questions.draft.csv
+/local_rag_service/data/test_questions.evidence.csv
+/local_rag_service/data/QUESTIONS_DRAFT.md
+
+# OS metadata
+.DS_Store

@@ -1,0 +1,31 @@
+[project]
+name = "local-rag-service"
+version = "0.1.0"
+description = "Offline RAG service and reproducible retrieval experiments"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi", "uvicorn", "pydantic>=2,<3", "pydantic-settings",
+  "httpx", "docling", "chromadb", "llama-index-core",
+  "llama-index-vector-stores-chroma", "llama-index-embeddings-huggingface",
+  "llama-index-llms-ollama", "llama-index-retrievers-bm25",
+  "sentence-transformers", "torch", "ragas", "langchain-community<0.4.2",
+  "numpy", "scikit-learn", "pandas", "seaborn", "matplotlib",
+  "huggingface-hub", "transformers", "psutil", "filelock",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
