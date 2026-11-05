@@ -1,10 +1,14 @@
+import argparse
 import csv
 import io
 import json
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from llama_index.core import Document
@@ -12,8 +16,10 @@ from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 from llama_index.core.schema import BaseNode, MetadataMode, TextNode
 
 from app.config import Settings
-from app.storage import atomic_write, digest
+from app.storage import atomic_write, digest, read_json, write_json
 from app.text_cleanup import repair_pdf_encoding
+
+logger = logging.getLogger(__name__)
 
 Tokenizer = Callable[[str], list[Any]]
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt", ".md"}
@@ -51,56 +57,106 @@ def corpus_fingerprint(settings: Settings) -> str:
     )
 
 
-def convert_documents_to_markdown(settings: Settings | None = None) -> list[Document]:
+def document_converter(settings: Settings):
+    artifacts = settings.MODEL_DIR / "docling"
+    from docling.datamodel.accelerator_options import AcceleratorOptions
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import (
+        PdfPipelineOptions,
+        TesseractCliOcrOptions,
+    )
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    options = PdfPipelineOptions(artifacts_path=artifacts)
+    options.accelerator_options = AcceleratorOptions(device=settings.DEVICE)
+    options.enable_remote_services = False
+    options.do_ocr = settings.OCR_ENABLED
+    options.do_table_structure = True
+    options.do_formula_enrichment = True
+    if settings.OCR_ENABLED:
+        options.ocr_options = TesseractCliOcrOptions(lang=settings.OCR_LANGUAGES)
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=options),
+        }
+    )
+
+
+def convert_documents_to_markdown(
+    settings: Settings | None = None, *, reuse_existing: bool = False
+) -> list[Document]:
     settings = settings or Settings()
     settings.create_directories()
     files = source_files(settings)
     if not files:
         raise ValueError(f"No supported documents in {settings.RAW_DATA_DIR}")
+    model_manifest = settings.MODEL_DIR / "manifest.json"
+    conversion_config = {
+        "schema_version": 1,
+        "docling_version": version("docling"),
+        "device": settings.DEVICE,
+        "ocr": settings.OCR_ENABLED,
+        "ocr_languages": settings.OCR_LANGUAGES,
+        "formula_enrichment": True,
+        "table_structure": True,
+        "models_hash": digest(model_manifest.read_bytes()) if model_manifest.is_file() else None,
+        "text_cleanup_hash": digest(Path(__file__).with_name("text_cleanup.py").read_bytes()),
+    }
     converter = None
     documents = []
     rows = []
-    for path in files:
+    for number, path in enumerate(files, 1):
+        started = perf_counter()
         name = path.relative_to(settings.RAW_DATA_DIR).as_posix()
         doc_id = digest(name)
+        source_hash = digest(path.read_bytes())
+        output = settings.PROCESSED_MD_DIR / f"{name}.md"
+        receipt = output.with_suffix(output.suffix + ".cache.json")
+        key = {"source_hash": source_hash, "conversion": conversion_config}
+        cached = read_json(receipt) if receipt.is_file() else {}
+        saved = output.read_text(encoding="utf-8") if output.is_file() else ""
+        valid_cache = cached.get("key") == key and cached.get("markdown_hash") == digest(saved)
+        adopt = reuse_existing and not receipt.exists() and bool(saved.strip())
+        origin = "converted"
+        logger.info(
+            "[%s/%s] %s: %s",
+            number,
+            len(files),
+            name,
+            "cached" if valid_cache else "reuse existing" if adopt else "converting",
+        )
         if path.suffix.lower() in {".md", ".txt"}:
             markdown = path.read_text(encoding="utf-8-sig")
+        elif valid_cache or adopt:
+            markdown = saved
+            origin = cached.get("origin", "user_supplied_markdown")
+            if adopt:
+                logger.warning("Reusing %s without historical source verification", name)
         else:
             artifacts = settings.MODEL_DIR / "docling"
             if path.suffix.lower() == ".pdf" and not artifacts.is_dir():
                 raise FileNotFoundError(f"Docling artifacts missing: {artifacts}")
             if converter is None:
-                from docling.datamodel.accelerator_options import AcceleratorOptions
-                from docling.datamodel.base_models import InputFormat
-                from docling.datamodel.pipeline_options import (
-                    PdfPipelineOptions,
-                    TesseractCliOcrOptions,
-                )
-                from docling.document_converter import DocumentConverter, PdfFormatOption
-
-                options = PdfPipelineOptions(artifacts_path=artifacts)
-                options.accelerator_options = AcceleratorOptions(device=settings.DEVICE)
-                options.enable_remote_services = False
-                options.do_ocr = settings.OCR_ENABLED
-                options.do_table_structure = True
-                options.do_formula_enrichment = True
-                if settings.OCR_ENABLED:
-                    options.ocr_options = TesseractCliOcrOptions(lang=settings.OCR_LANGUAGES)
-                converter = DocumentConverter(
-                    format_options={
-                        InputFormat.PDF: PdfFormatOption(pipeline_options=options),
-                    }
-                )
+                converter = document_converter(settings)
             result = converter.convert(path, raises_on_error=True)
             markdown = result.document.export_to_markdown()
             if path.suffix.lower() == ".pdf":
                 markdown = repair_pdf_encoding(markdown)
         if not markdown.strip():
             raise ValueError(f"Document contains no text: {name}; check OCR settings")
-        # A relative source path plus extension avoids lecture.pdf/lecture.docx collisions.
-        output = settings.PROCESSED_MD_DIR / f"{name}.md"
+        if digest(path.read_bytes()) != source_hash:
+            raise ValueError(f"Source changed during conversion: {name}; retry")
         atomic_write(output, markdown)
-        metadata = {"file_name": name, "doc_id": doc_id, "source_hash": digest(path.read_bytes())}
+        write_json(receipt, {"key": key, "markdown_hash": digest(markdown), "origin": origin})
+        logger.info(
+            "[%s/%s] %s: ready in %.1f s", number, len(files), name, perf_counter() - started
+        )
+        metadata = {
+            "file_name": name,
+            "doc_id": doc_id,
+            "source_hash": source_hash,
+            "conversion_origin": origin,
+        }
         documents.append(Document(text=markdown, id_=doc_id, metadata=metadata))
         rows.append(
             {
@@ -249,3 +305,20 @@ def split_documents(
     if not nodes:
         raise ValueError("No chunks produced")
     return nodes
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Convert documents with per-file checkpoints")
+    parser.add_argument(
+        "--reuse-existing",
+        action="store_true",
+        help="Trust existing Markdown without cache records (explicit recovery)",
+    )
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    documents = convert_documents_to_markdown(reuse_existing=args.reuse_existing)
+    print(f"Обработано документов: {len(documents)}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -116,3 +116,77 @@ def test_real_docling_pptx_conversion_offline(settings):
     assert all(node.metadata["file_name"] == "lecture.PPTX" for node in nodes)
     with settings.METADATA_CSV_PATH.open() as stream:
         assert list(csv.DictReader(stream))[0]["source_format"] == "pptx"
+
+
+@pytest.fixture
+def cached_converter(settings, monkeypatch):
+    from types import SimpleNamespace
+
+    (settings.MODEL_DIR / "docling").mkdir(parents=True)
+    calls = []
+    failures = set()
+
+    def convert(path, **kwargs):
+        calls.append(path.name)
+        if path.name in failures:
+            raise RuntimeError("interrupted conversion")
+        return SimpleNamespace(
+            document=SimpleNamespace(export_to_markdown=lambda: "Converted " + path.read_text())
+        )
+
+    monkeypatch.setattr(
+        "app.ingestion.document_converter", lambda settings: SimpleNamespace(convert=convert)
+    )
+    return calls, failures
+
+
+def test_conversion_resumes_after_interruption(settings, cached_converter):
+    calls, failures = cached_converter
+    for name in ("a.pdf", "b.pdf"):
+        (settings.RAW_DATA_DIR / name).write_text(name)
+    failures.add("b.pdf")
+    with pytest.raises(RuntimeError, match="interrupted"):
+        convert_documents_to_markdown(settings)
+    assert (settings.PROCESSED_MD_DIR / "a.pdf.md.cache.json").exists()
+    assert not (settings.PROCESSED_MD_DIR / "b.pdf.md.cache.json").exists()
+    failures.clear()
+    docs = convert_documents_to_markdown(settings)
+    assert calls == ["a.pdf", "b.pdf", "b.pdf"]
+    assert len(docs) == 2
+    assert len(convert_documents_to_markdown(settings)) == 2
+    assert calls == ["a.pdf", "b.pdf", "b.pdf"]
+
+
+@pytest.mark.parametrize("change", ["source", "markdown", "settings", "models"])
+def test_conversion_invalidates_changed_cache(settings, cached_converter, change):
+    calls, _ = cached_converter
+    source = settings.RAW_DATA_DIR / "a.pdf"
+    source.write_text("original")
+    convert_documents_to_markdown(settings)
+    if change == "source":
+        source.write_text("replacement")
+    elif change == "markdown":
+        (settings.PROCESSED_MD_DIR / "a.pdf.md").write_text("edited")
+    elif change == "settings":
+        settings.OCR_ENABLED = True
+    else:
+        (settings.MODEL_DIR / "manifest.json").write_text("{}")
+    convert_documents_to_markdown(settings, reuse_existing=True)
+    assert calls == ["a.pdf", "a.pdf"]
+
+
+@pytest.mark.parametrize("reuse", [True, False])
+def test_legacy_markdown_requires_explicit_reuse(settings, cached_converter, reuse):
+    from app.storage import read_json
+
+    calls, _ = cached_converter
+    (settings.RAW_DATA_DIR / "a.pdf").write_text("source")
+    output = settings.PROCESSED_MD_DIR / "a.pdf.md"
+    output.write_text("previously converted")
+    docs = convert_documents_to_markdown(settings, reuse_existing=reuse)
+    assert calls == ([] if reuse else ["a.pdf"])
+    assert docs[0].text == ("previously converted" if reuse else "Converted source")
+    receipt = read_json(output.with_suffix(".md.cache.json"))
+    assert receipt["origin"] == ("user_supplied_markdown" if reuse else "converted")
+    convert_documents_to_markdown(settings)
+    assert calls == ([] if reuse else ["a.pdf"])

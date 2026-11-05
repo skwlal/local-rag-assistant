@@ -1,6 +1,7 @@
 """Terminal interface to the existing local RAG pipeline."""
 
 import argparse
+import logging
 from contextlib import closing
 
 import httpx
@@ -51,6 +52,7 @@ def main(argv=None) -> int:
     parser.add_argument("--question", help="Ответить на один вопрос и выйти")
     parser.add_argument("--sources", action="store_true", help="Показывать текст источников")
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     settings = Settings(**({"OLLAMA_BASE_URL": args.ollama_url} if args.ollama_url else {}))
     with closing(LocalRAGPipeline(settings)) as pipeline:
         if args.models:

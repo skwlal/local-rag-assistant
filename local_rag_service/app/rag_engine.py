@@ -180,6 +180,7 @@ class LocalRAGPipeline:
             start = perf_counter()
             before = corpus_fingerprint(self.settings)
             documents = convert_documents_to_markdown(self.settings)
+            logger.info("Splitting %s documents into chunks", len(documents))
             encoder = local_tokenizer(self.settings)
             nodes = split_documents(
                 documents,
@@ -193,6 +194,9 @@ class LocalRAGPipeline:
                     "Source corpus changed during ingestion; retry with a stable corpus"
                 )
             physical_name = f"{collection_name(request)}_{uuid4().hex[:12]}"
+            logger.info(
+                "Embedding and indexing %s chunks with %s", len(nodes), request.embedding_model
+            )
             self.build_index(nodes, physical_name, request.embedding_model)
             node_path = self.settings.INDEX_DIR / f"{physical_name}.jsonl"
             content = "\n".join(node.to_json() for node in nodes) + "\n"
