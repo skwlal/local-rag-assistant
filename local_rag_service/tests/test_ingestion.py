@@ -217,3 +217,30 @@ def test_legacy_markdown_requires_explicit_reuse(settings, cached_converter, reu
     assert receipt["origin"] == ("user_supplied_markdown" if reuse else "converted")
     convert_documents_to_markdown(settings)
     assert calls == ([] if reuse else ["a.pdf"])
+
+
+@pytest.mark.parametrize("table", [False, True])
+@pytest.mark.parametrize("overlap", [0, 8])
+def test_complete_chunks_fit_with_nonadditive_heading_tokens(table, overlap):
+    def tokenizer(text):
+        tokens = text.split()
+        if text.startswith("Раздел:") and text.split("\n\n", 1)[-1].strip():
+            tokens += ["boundary"] * 12
+        return tokens
+
+    values = [f"value{i}" for i in range(120)]
+    body = " ".join(values)
+    if table:
+        body = "| Name | Value |\n| --- | --- |\n| example | " + body + " |"
+    document = Document(
+        text="# Heading\n" + body, id_="stable", metadata={"file_name": "lecture.pdf"}
+    )
+    nodes = split_documents([document], "structural", 64, overlap, tokenizer=tokenizer)
+    assert len(nodes) > 1
+    assert all(len(tokenizer(node.text)) <= 48 for node in nodes)
+    assert all(node.text.startswith("Раздел: /Heading\n\n") for node in nodes)
+    assert all(node.metadata["is_table"] == table for node in nodes)
+    words = " ".join(node.text for node in nodes).split()
+    assert set(values) <= set(words)
+    if overlap == 0:
+        assert [word for word in words if word in set(values)] == values

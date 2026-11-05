@@ -323,23 +323,35 @@ def split_documents(
             if available <= chunk_overlap:
                 raise ValueError("Heading path leaves insufficient chunk budget")
             blocks = markdown_blocks(text) if strategy == "structural" else [(text, False)]
-            splitter = SentenceSplitter(
-                chunk_size=available,
-                chunk_overlap=chunk_overlap,
-                tokenizer=tokenizer,
-                chunking_tokenizer_fn=lambda s: re.split(r"(?<=[.!?])\s+", s),
-                include_metadata=False,
-            )
             for block, table in blocks:
-                parts = (
-                    split_table(block, available, tokenizer)
-                    if table
-                    else splitter.split_text(block)
-                )
+                block_budget = available
+                # Token counts are not additive across the heading/body boundary.
+                # Re-split the original block until the complete chunks fit.
+                while block_budget > chunk_overlap:
+                    parts = (
+                        split_table(block, block_budget, tokenizer)
+                        if table
+                        else SentenceSplitter(
+                            chunk_size=block_budget,
+                            chunk_overlap=chunk_overlap,
+                            tokenizer=tokenizer,
+                            chunking_tokenizer_fn=lambda s: re.split(r"(?<=[.!?])\s+", s),
+                            include_metadata=False,
+                        ).split_text(block)
+                    )
+                    overflow = max(
+                        (len(tokenizer(prefix + part)) - budget for part in parts), default=0
+                    )
+                    if overflow <= 0:
+                        break
+                    block_budget -= overflow
+                else:
+                    raise ValueError(
+                        f"Cannot fit text with heading {header_path!r} in "
+                        f"{metadata['file_name']!r}; shorten the heading or reduce chunk_overlap"
+                    )
                 for part in parts:
                     content = prefix + part
-                    if len(tokenizer(content)) > budget:
-                        raise ValueError("Chunk exceeds token budget after heading composition")
                     identity = json.dumps(
                         [document.id_, strategy, chunk_size, chunk_overlap, len(nodes), content],
                         ensure_ascii=False,
