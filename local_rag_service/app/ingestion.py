@@ -211,21 +211,73 @@ def markdown_blocks(text: str) -> list[tuple[str, bool]]:
     return [(block.strip(), table) for block, table in blocks if block.strip()]
 
 
+def split_prefixed_text(text: str, prefix: str, budget: int, tokenizer: Tokenizer) -> list[str]:
+    """Repeat context without truncating content or exceeding the combined token budget."""
+    available = budget - len(tokenizer(prefix))
+    while available > 0:
+        parts = SentenceSplitter(
+            chunk_size=available,
+            chunk_overlap=0,
+            tokenizer=tokenizer,
+            include_metadata=False,
+        ).split_text(text)
+        chunks = [prefix + part for part in parts]
+        overflow = max((len(tokenizer(chunk)) - budget for chunk in chunks), default=0)
+        if overflow <= 0:
+            return chunks
+        available -= max(1, overflow)
+    raise ValueError("Table context leaves no room for text; shorten the heading path")
+
+
+def table_cells(row: str) -> list[str]:
+    row = row.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|") and not row.endswith(r"\|"):
+        row = row[:-1]
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", row)]
+
+
+def split_long_table_row(
+    header: list[str], row: str, number: int, budget: int, tokenizer: Tokenizer
+) -> list[str]:
+    labels, cells = table_cells(header[0]), table_cells(row)
+    if len(labels) != len(cells):
+        # Ambiguous pipes (for example formulas): preserve the raw row and header.
+        return split_prefixed_text(
+            "\n".join(header + [row]), f"Строка таблицы {number}:\n", budget, tokenizer
+        )
+    chunks = []
+    for column, (label, cell) in enumerate(zip(labels, cells, strict=True), 1):
+        prefix = f"Строка таблицы {number}; столбец {column} ({label}):\n"
+        content = cell or "(пустая ячейка)"
+        if len(tokenizer(prefix)) > budget // 2:
+            prefix = f"Строка таблицы {number}; столбец {column}:\n"
+            content = f"Заголовок: {label}\nЗначение: {content}"
+        chunks.extend(split_prefixed_text(content, prefix, budget, tokenizer))
+    return chunks
+
+
 def split_table(text: str, budget: int, tokenizer: Tokenizer) -> list[str]:
     lines = text.splitlines()
     header = lines[:2]
     chunks: list[str] = []
     current = header.copy()
-    if len(tokenizer("\n".join(header))) > budget:
-        raise ValueError("Table header exceeds chunk budget; increase chunk_size")
-    for row in lines[2:]:
+    for number, row in enumerate(lines[2:], 1):
         if len(tokenizer("\n".join(header + [row]))) > budget:
-            raise ValueError("A table row exceeds chunk budget; shorten it or raise chunk_size")
+            if len(current) > 2:
+                chunks.append("\n".join(current))
+                current = header.copy()
+            chunks.extend(split_long_table_row(header, row, number, budget, tokenizer))
+            continue
         if len(tokenizer("\n".join(current + [row]))) > budget:
             chunks.append("\n".join(current))
             current = header.copy()
         current.append(row)
-    chunks.append("\n".join(current))
+    if len(current) > 2:
+        chunks.append("\n".join(current))
+    if not chunks:
+        return split_prefixed_text(text, "", budget, tokenizer)
     return chunks
 
 

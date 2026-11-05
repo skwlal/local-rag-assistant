@@ -46,16 +46,43 @@ def test_naive_and_structural_differ():
     assert len(structural) == 2
 
 
-def test_oversized_table_fails_instead_of_truncating():
-    text = "| Name | Value |\n| --- | --- |\n| name | " + "word " * 80 + "|"
-    with pytest.raises(ValueError, match="table row"):
-        split_documents(
-            [Document(text=text, metadata={"file_name": "a"})],
-            "structural",
-            64,
-            0,
-            tokenizer=str.split,
-        )
+def test_oversized_table_row_preserves_all_values_and_column_labels():
+    values = [f"word{i}" for i in range(120)]
+    text = "| Name | Value |\n| --- | --- |\n| name | " + " ".join(values) + " |"
+    nodes = split_documents(
+        [Document(text=text, metadata={"file_name": "a.pdf"})],
+        "structural",
+        64,
+        0,
+        tokenizer=str.split,
+    )
+    assert len(nodes) > 2
+    assert all(len(n.text.split()) <= 48 for n in nodes)
+    assert all(n.metadata["is_table"] for n in nodes)
+    assert "(Name):" in nodes[0].text and "name" in nodes[0].text
+    value_chunks = [n.text.split("\n", 1)[1] for n in nodes if "(Value):" in n.text]
+    assert " ".join(value_chunks).split() == values
+
+
+@pytest.mark.parametrize("budget", [48, 112, 240, 496])
+def test_table_mixed_rows_and_long_headers(budget):
+    from app.ingestion import split_table
+
+    label = " ".join(f"header{i}" for i in range(100))
+    text = f"| Short | {label} |\n| --- | --- |\n| first | " + "payload " * 550
+    text += "|\n| last | ending |"
+    chunks = split_table(text, budget, str.split)
+    assert all(len(chunk.split()) <= budget for chunk in chunks)
+    combined = "\n".join(chunks)
+    assert combined.count("payload") == 550
+    assert "first" in combined and "last" in combined and "ending" in combined
+    assert all(word in combined for word in label.split())
+
+
+def test_table_cells_preserve_escaped_pipes_and_empty_values():
+    from app.ingestion import table_cells
+
+    assert table_cells(r"| a\|b | | c |") == [r"a\|b", "", "c"]
 
 
 def test_code_fence_is_not_a_table():
